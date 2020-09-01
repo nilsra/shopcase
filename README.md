@@ -1,1 +1,4 @@
 # shopcase
+
+# TODO
+- add tests

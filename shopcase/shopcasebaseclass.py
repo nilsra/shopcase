@@ -90,6 +90,8 @@ class ShopCaseBaseClass:
             self._from_dir(source)
         elif isinstance(source, (str, Path)) and '.shop.zip' in Path(source).name:
             self._from_file(source)
+        elif isinstance(source, str) and source[0] == '{':
+            self._from_json(source)
 
         self.log_func = print
         
@@ -276,6 +278,13 @@ class ShopCaseBaseClass:
             for key, value in self._get_dict_with_json_types().items():
                 f.writestr(f'{key}.yaml', yaml.dump(value, allow_unicode=True)) #.encode('utf-8')
         return b.getvalue()
+
+    def to_json(self):
+        return json.dumps(self._get_dict_with_json_types(), ensure_ascii=False)
+
+    def _from_json(self, s: str):
+        self.case = json.loads(s)
+        self._convert_to_pyshop_types()
 
     def _from_file(self, filename: Union[str, Path]):
         with open(filename, 'rb') as f:

@@ -86,12 +86,12 @@ class ShopCaseBaseClass:
             self.case = source
         elif isinstance(source, bytes):
             self._from_bytestring(source)
+        elif isinstance(source, str) and source[0] == '{':
+            self._from_json(source)
         elif isinstance(source, (str, Path)) and (Path(source) / 'model.yaml').exists():
             self._from_dir(source)
         elif isinstance(source, (str, Path)) and '.shop.zip' in Path(source).name:
             self._from_file(source)
-        elif isinstance(source, str) and source[0] == '{':
-            self._from_json(source)
 
         self.log_func = print
         

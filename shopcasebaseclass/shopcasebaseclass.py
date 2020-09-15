@@ -266,6 +266,25 @@ class ShopCaseBaseClass:
         if 'unit_combination' in self.case['model']:
             _ = self.case['model'].pop('unit_combination')
 
+    def get_txys(self):
+        data = {}
+        for obj_type, obj_name, attr, value in self._crawl_model():
+            if isinstance(value, pd.Series) and isinstance(value.index, pd.DatetimeIndex):
+                name = '|'.join([obj_type, obj_name, attr]).lower()
+                data[name] = value
+        df = pd.DataFrame(data)
+
+        # Flip the sign to more intuitive value
+        patterns = [
+            'incr_cost_nok_mw',
+            '|sale|mw'
+        ]
+        for c in df.columns:
+            if any([p in c for p in patterns]):
+                df[c] *= -1
+
+        return df
+
     def to_file(self, filename: Union[str, Path] = 'case.shop.zip'):
         self.drop_mc_data()  # Drop bestprofit and other marginal cost data as it inflates the model file too much
         with open(filename, 'wb') as f:
@@ -281,6 +300,13 @@ class ShopCaseBaseClass:
 
     def to_json(self):
         return json.dumps(self._get_dict_with_json_types(), ensure_ascii=False)
+
+    def to_yaml_files(self, path: Union[str, Path]) -> Path:
+        path = Path(path)
+        for key, value in self._get_dict_with_json_types().items():
+            with open(path / f'{key}.yaml', 'bw') as f:
+                f.write(yaml.dump(value, allow_unicode=True, encoding='UTF-8')) #.encode('utf-8')
+        return path
 
     def _from_json(self, s: str):
         self.case = json.loads(s)
@@ -401,12 +427,15 @@ class ShopCaseBaseClass:
 
     def _to_json_type(self, x):
         """ Convert value x into JSON type(s). """
-        
-        if x is None or isinstance(x, (int, float, str)):
-            return x
-        
+             
         if isinstance(x, pd.Timestamp):
             return str(x)        
+
+        if isinstance(x, np.float):
+            return float(x)
+
+        if isinstance(x, np.int):
+            return int(x)
         
         if isinstance(x, pd.Series):
             if isinstance(x.index, pd.DatetimeIndex):
@@ -442,6 +471,11 @@ class ShopCaseBaseClass:
 
         if isinstance(x, list):     
             return [self._to_json_type(i) for i in x]
+
+        if x is None or isinstance(x, (int, float, str)):
+            return x
+
+        raise TypeError(f'<_to_json_type> : Unrecognized type {type(x)}')
 
     def _get_dict_with_json_types(self):
 

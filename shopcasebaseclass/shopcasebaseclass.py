@@ -15,7 +15,16 @@ from typing import ByteString, Union, Dict
 try:
     from pyshop import ShopSession  # pylint: disable=import-error
 except:
-    print('When loading ShopCaseBaseClass.py: cannot import pyshop')
+    ShopSessionError = NameError('Cannot access ShopSession : pyshop is not available')
+    class ShopSession:
+        def __init__(self):
+            raise ShopSessionError
+        def __getattr__(self, attr):
+            raise ShopSessionError
+        def __setattr__(self, attr, value):
+            raise ShopSessionError
+
+    #print('When loading ShopCaseBaseClass.py: cannot import pyshop')
 
 
 class ShopCaseBaseClass:
@@ -80,6 +89,8 @@ class ShopCaseBaseClass:
     
     def __init__(self, source):
         self.case = None
+        self.log_func = print
+
         if isinstance(source, ShopSession):
             self._from_shopsession(source)
         elif isinstance(source, dict):
@@ -93,7 +104,7 @@ class ShopCaseBaseClass:
         elif isinstance(source, (str, Path)) and '.shop.zip' in Path(source).name:
             self._from_file(source)
 
-        self.log_func = print
+
         
     def run(
         self, 

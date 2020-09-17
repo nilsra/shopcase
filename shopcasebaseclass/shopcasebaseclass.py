@@ -1,16 +1,19 @@
 
-from io import BytesIO
-import yaml
+
 import os
 import json
 import zipfile
-from typing import Dict, List
-import pandas as pd
-import numpy as np
 import tempfile
 from copy import deepcopy
 from pathlib import Path
-from typing import ByteString, Union, Dict
+from typing import ByteString, Union, Dict, List
+from collections import namedtuple
+from io import BytesIO
+
+import pandas as pd
+import numpy as np
+import yaml
+from graphviz import Digraph
 
 try:
     from pyshop import ShopSession  # pylint: disable=import-error
@@ -295,6 +298,49 @@ class ShopCaseBaseClass:
                 df[c] *= -1
 
         return df
+
+    def show_topology(self) -> Digraph:
+            
+        dot = Digraph(comment='SHOP topology')
+        
+        Node = namedtuple('Node', ['type', 'label', 'name'])
+        Edge = namedtuple('Edge', ['relation', 'start', 'end'])
+        
+        default_node_attrs = {'shape': 'ellipse', 'fillcolor': '#ffffff', 'style': ''}
+        node_attrs = {
+            'plant': {'shape': 'box', 'fillcolor': '#FF9999', 'style': 'filled'},
+            'reservoir': {'shape': 'invtriangle', 'fillcolor': '#99FFFF', 'style': 'filled'},
+            'junction': {'shape': 'point', 'fillcolor': '#ffffff', 'style': ''},
+            'junction_gate': {'shape': 'point', 'fillcolor': '#ffffff', 'style': ''}
+        }
+        
+        def get_edge_style(e: Edge):
+            if 'gate' in [e.start.type, e.end.type] and e.relation == 'connection_standard':
+                return 'dashed'
+            return 'solid'  
+        
+        nodes = set()
+        edges = set()
+        
+        for obj_type in self.case['connections']:
+            for obj_name, conn in self.case['connections'][obj_type].items():
+                node1 = Node(type=obj_type, label=obj_name, name=f'{obj_type}_{obj_name}')
+                
+                for obj_type2, obj_name2, conn_type in conn:
+                    node2 = Node(type=obj_type2, label=obj_name2, name=f'{obj_type2}_{obj_name2}')
+                    edge = Edge(relation=conn_type, start=node1, end=node2)
+                            
+                nodes.add(node1)
+                nodes.add(node2)
+                edges.add(edge)
+                
+        for n in nodes:
+            dot.node(n.name, label=n.label, **node_attrs.get(n.type, default_node_attrs))
+                
+        for e in edges:
+            dot.edge(e.start.name, e.end.name, style=get_edge_style(e))
+            
+        return dot
 
     def to_file(self, filename: Union[str, Path] = 'case.shop.zip'):
         self.drop_mc_data()  # Drop bestprofit and other marginal cost data as it inflates the model file too much

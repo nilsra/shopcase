@@ -194,6 +194,7 @@ class ShopCaseBaseClass:
             if shop.shop_api.GetObjectInfo(obj_type, 'isInput') == 'False':
                 continue
             if shop.shop_api.GetAttributeInfo(obj_type, attr, 'isInput') == 'True':
+                print(obj_type, obj_name, attr)
                 shop.model[obj_type][obj_name][attr].set(value)
             
         # Connect objects
@@ -552,10 +553,11 @@ class ShopCaseBaseClass:
         time = self.case['time']
         
         # Convert time data to types expected by pyshop
-        time['timeresolution'] = pd.Series(
-                time['timeresolution']['value'], 
-                index=time['timeresolution']['index'], 
-                name=time['timeresolution']['name']
+        if not isinstance(time['timeresolution'], (str, pd.Series)):
+            time['timeresolution'] = pd.Series(
+                    time['timeresolution']['value'], 
+                    index=time['timeresolution']['index'], 
+                    name=time['timeresolution']['name']
             )
         time['starttime'] = pd.Timestamp(time['starttime'])
         time['endtime'] = pd.Timestamp(time['endtime'])

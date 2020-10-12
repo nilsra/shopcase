@@ -167,6 +167,13 @@ class ShopCaseBaseClass:
     def to_shopsession(self, **shopsession_kwargs) -> ShopSession:
         
         shop = ShopSession(**shopsession_kwargs)
+
+        commands_to_call_before_object_creation = ['set newgate /off']
+        for c in commands_to_call_before_object_creation:
+            if c in self.case['commands']:
+                self.log_func(f'Calling command "{c}"')
+                shop.shop_api.ExecuteCommand(c)
+
         model = self.case['model']
 
         # Set time resolution
@@ -194,18 +201,33 @@ class ShopCaseBaseClass:
             if shop.shop_api.GetObjectInfo(obj_type, 'isInput') == 'False':
                 continue
             if shop.shop_api.GetAttributeInfo(obj_type, attr, 'isInput') == 'True':
-                print(obj_type, obj_name, attr)
                 shop.model[obj_type][obj_name][attr].set(value)
             
         # Connect objects
         conn = self.case['connections']
-        for from_type in conn:
-            for from_name in conn[from_type]:
-                for to_type, to_name, conn_type in conn[from_type][from_name]:
+        for to_type in conn:
+            for to_name in conn[to_type]:
+                for connection_map in conn[to_type][to_name]:
                     try:
-                        shop.shop_api.AddRelation(from_type, from_name, conn_type, to_type, to_name)
+                        shop.shop_api.AddRelation(connection_map['upstream_obj_type'],
+                                                  connection_map['upstream_obj_name'],
+                                                  connection_map['connection_type'], to_type, to_name)
+
                     except ValueError:
-                        self.log_func(f'to_shopsession : could not connect from_type={from_type}, from_name={from_name}, conn_type={conn_type}, to_type={to_type}, to_name={to_name}')
+                        self.log_func(f'to_shopsession : could not connect '
+                                      f'from_type={connection_map["upstream_obj_type"]}, '
+                                      f'from_name={connection_map["upstream_obj_name"]}, '
+                                      f'conn_type={connection_map["connection_type"]}, '
+                                      f'to_type={to_type}, '
+                                      f'to_name={to_name}')
+        #conn = self.case['connections']
+        #for from_type in conn:
+        #    for from_name in conn[from_type]:
+        #        for to_type, to_name, conn_type in conn[from_type][from_name]:
+        #            try:
+        #                shop.shop_api.AddRelation(from_type, from_name, conn_type, to_type, to_name)
+        #            except ValueError:
+        #                self.log_func(f'to_shopsession : could not connect from_type={from_type}, from_name={from_name}, conn_type={conn_type}, to_type={to_type}, to_name={to_name}')
 
         return shop
 
@@ -219,48 +241,53 @@ class ShopCaseBaseClass:
         to 0.1, and should be less than 1 to catch differences in binary values
         like unit commitment.
         """
-        
-        def compare(left, right):
-            
-            diffs = {}
-            
-            for i in set(left) | set(right):
-                if i not in right or i not in left:
-                    diffs[i] = True
-                elif isinstance(left[i], dict):
-                    res = compare(left[i], right[i])
-                    if res:
-                        diffs[i] = res
-                else:
-                    status = is_different(left[i], right[i])
-                    if status:
-                        diffs[i] = status
-                        
-            return diffs
-                        
-        def is_different(i, j):
-            if not type(i) is type(j):
-                return True
-            if isinstance(i, (int, float, str, pd.Timestamp)):
-                return i != j
-            if isinstance(i, pd.Series):
-                try:
-                    # Dropping consecutive identical values before we compare data
-                    _i = i[i != i.shift(1)].dropna()
-                    _j = j[j != j.shift(1)].dropna()
-                    return ((_i - _j).abs().max() > tolerance) or (_i - _j).isna().any()
-                except ValueError:
-                    return True
-            if isinstance(i, dict):
-                return compare(i, j)
-            if isinstance(i, list):
-                if len(i) != len(j):
-                    return True
-                return any([is_different(m, n) for m, n in zip(i, j)])
-            
-            raise ValueError(f'Type not specified in is_equal : {i}={type(i)}')
     
-        return compare(self.case, other.case)
+        return self._compare(self.case, other.case, tolerance)
+
+    @classmethod
+    def _compare(cls, left, right, tolerance: float = 0.0):
+        """ Compare two dictionaries. """
+        
+        diffs = {}
+        
+        for i in set(left) | set(right):
+            if i not in right or i not in left:
+                diffs[i] = True
+            elif isinstance(left[i], dict):
+                res = cls._compare(left[i], right[i], tolerance)
+                if res:
+                    diffs[i] = res
+            else:
+                status = cls._is_different(left[i], right[i], tolerance)
+                if status:
+                    diffs[i] = status
+                    
+        return diffs
+
+    @classmethod           
+    def _is_different(cls, i, j, tolerance: float = 0.0):
+        """ Compare two objects. """
+
+        if not type(i) is type(j):
+            return True
+        if isinstance(i, (int, float, str, pd.Timestamp)):
+            return i != j
+        if isinstance(i, pd.Series):
+            try:
+                # Dropping consecutive identical values before we compare data
+                _i = i[i != i.shift(1)].dropna()
+                _j = j[j != j.shift(1)].dropna()
+                return ((_i - _j).abs().max() > tolerance) or (_i - _j).isna().any()
+            except ValueError:
+                raise ValueError
+        if isinstance(i, dict):
+            return cls._compare(i, j, tolerance)
+        if isinstance(i, list):
+            if len(i) != len(j):
+                return True
+            return any([cls._is_different(m, n, tolerance) for m, n in zip(i, j)])
+        
+        raise ValueError(f'Type not specified in is_equal : {i}={type(i)}')
 
     def drop_mc_data(self):
         """ Drop the large data sets to make it feasible to serialize data to disk. """
@@ -326,14 +353,13 @@ class ShopCaseBaseClass:
         for obj_type in self.case['connections']:
             for obj_name, conn in self.case['connections'][obj_type].items():
                 node1 = Node(type=obj_type, label=obj_name, name=f'{obj_type}_{obj_name}')
+                nodes.add(node1)
                 
                 for obj_type2, obj_name2, conn_type in conn:
                     node2 = Node(type=obj_type2, label=obj_name2, name=f'{obj_type2}_{obj_name2}')
-                    edge = Edge(relation=conn_type, start=node1, end=node2)
-                            
-                nodes.add(node1)
-                nodes.add(node2)
-                edges.add(edge)
+                    edge = Edge(relation=conn_type, start=node1, end=node2)         
+                    nodes.add(node2)
+                    edges.add(edge)
                 
         for n in nodes:
             dot.node(n.name, label=n.label, **node_attrs.get(n.type, default_node_attrs))
@@ -353,7 +379,7 @@ class ShopCaseBaseClass:
         b = BytesIO()
         with zipfile.ZipFile(b, 'w', zipfile.ZIP_DEFLATED) as f:
             for key, value in self._get_dict_with_json_types().items():
-                f.writestr(f'{key}.yaml', yaml.dump(value, allow_unicode=True)) #.encode('utf-8')
+                f.writestr(f'{key}.yaml', yaml.dump(value, allow_unicode=True, encoding='UTF-8', sort_keys=False)) #.encode('utf-8')
         return b.getvalue()
 
     def to_json(self):
@@ -363,7 +389,7 @@ class ShopCaseBaseClass:
         path = Path(path)
         for key, value in self._get_dict_with_json_types().items():
             with open(path / f'{key}.yaml', 'bw') as f:
-                f.write(yaml.dump(value, allow_unicode=True, encoding='UTF-8')) #.encode('utf-8')
+                f.write(yaml.safe_dump(value, allow_unicode=True, encoding='UTF-8', sort_keys=False)) #.encode('utf-8')
         return path
 
     def _from_json(self, s: str):
@@ -470,18 +496,59 @@ class ShopCaseBaseClass:
                     input_relations.append(new_relation)
                     
             if input_relations:
-                # It is natural to list relation in from-to order, so we need to flip the retrieved input relations
+                # We also need to list the connections in downstream-upstream convention to preserve connection order
                 for relation in input_relations:
-                    if not relation['obj_type'] in connections:
-                        connections[relation['obj_type']] = {}
-                    if relation['obj_name'] in connections[relation['obj_type']]:
-                        connections[relation['obj_type']][relation['obj_name']].append([to_obj_type, to_obj_name,
-                                                                                        relation['conn_type']])
+                    if to_obj_type not in connections:
+                        connections[to_obj_type] = {}
+                    if to_obj_name in connections[to_obj_type]:
+                        connections[to_obj_type][to_obj_name].append({'upstream_obj_type': relation['obj_type'],
+                                                                      'upstream_obj_name': relation['obj_name'],
+                                                                      'connection_type': relation['conn_type']})
                     else:
-                        connections[relation['obj_type']][relation['obj_name']] = [[to_obj_type, to_obj_name,
-                                                                                    relation['conn_type']]]
+                        connections[to_obj_type][to_obj_name] = [{'upstream_obj_type': relation['obj_type'],
+                                                                  'upstream_obj_name': relation['obj_name'],
+                                                                  'connection_type': relation['conn_type']}]
                     
         return connections
+    #    obj_list = list(
+    #        zip(shop.shop_api.GetObjectTypesInSystem(), 
+    #            shop.shop_api.GetObjectNamesInSystem())
+    #    )
+    #    obj_dicts = [{'obj_type': x[0], 'obj_name': x[1]} for x in obj_list]
+    #    
+    #    connections = {}
+    #
+    #    for to_obj_type, to_obj_name in obj_list:
+    #        if shop.shop_api.GetObjectInfo(to_obj_type, 'isInput') == 'False':
+    #            continue
+#
+    #        input_relations = []
+    #        for conn_type in shop.shop_api.GetValidRelationTypes(to_obj_type):
+    #            # Use input relations in order to ensure connection order is preserved in cases where this matter
+    #            # E.g. Junctions where tunnel_loss_1 might differ from tunnel_loss_2 and so on
+    #            relations = shop.shop_api.GetInputRelations(to_obj_type, to_obj_name, conn_type)
+    #            
+    #            if not relations:
+    #                continue
+    #            
+    #            for r in relations:
+    #                new_relation = dict(obj_dicts[r])
+    #                new_relation["conn_type"] = conn_type
+    #                input_relations.append(new_relation)
+    #                
+    #        if input_relations:
+    #            # It is natural to list relation in from-to order, so we need to flip the retrieved input relations
+    #            for relation in input_relations:
+    #                if not relation['obj_type'] in connections:
+    #                    connections[relation['obj_type']] = {}
+    #                if relation['obj_name'] in connections[relation['obj_type']]:
+    #                    connections[relation['obj_type']][relation['obj_name']].append([to_obj_type, to_obj_name,
+    #                                                                                    relation['conn_type']])
+    #                else:
+    #                    connections[relation['obj_type']][relation['obj_name']] = [[to_obj_type, to_obj_name,
+    #                                                                                relation['conn_type']]]
+    #                
+    #    return connections
 
     def _to_json_type(self, x):
         """ Convert value x into JSON type(s). """

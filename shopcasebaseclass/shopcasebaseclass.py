@@ -4,6 +4,7 @@ import os
 import json
 import zipfile
 import tempfile
+import time
 from copy import deepcopy
 from pathlib import Path
 from typing import ByteString, Union, Dict, List
@@ -15,19 +16,7 @@ import numpy as np
 import yaml
 from graphviz import Digraph
 
-try:
-    from pyshop import ShopSession  # pylint: disable=import-error
-except:
-    ShopSessionError = NameError('Cannot access ShopSession : pyshop is not available')
-    class ShopSession:
-        def __init__(self):
-            raise ShopSessionError
-        def __getattr__(self, attr):
-            raise ShopSessionError
-        def __setattr__(self, attr, value):
-            raise ShopSessionError
-
-    #print('When loading ShopCaseBaseClass.py: cannot import pyshop')
+import pyshop  # type: ignore
 
 
 class ShopCaseBaseClass:
@@ -93,8 +82,9 @@ class ShopCaseBaseClass:
     def __init__(self, source):
         self.case = None
         self.log_func = print
+        self.shop_init_func = lambda: pyshop.ShopSession()
 
-        if isinstance(source, ShopSession):
+        if isinstance(source, pyshop.ShopSession):
             self._from_shopsession(source)
         elif isinstance(source, dict):
             self.case = source
@@ -107,12 +97,10 @@ class ShopCaseBaseClass:
         elif isinstance(source, (str, Path)) and '.shop.zip' in Path(source).name:
             self._from_file(source)
 
-
         
     def run(
         self, 
-        shopdir=None, 
-        **shopsession_kwargs) -> ShopSession:
+        shopdir=None) -> pyshop.ShopSession:
         """ Run the ShopCase in pyshop, and update self with the new results. """
 
         # Move to a temporary directory
@@ -131,10 +119,11 @@ class ShopCaseBaseClass:
                 Path(filename).write_text(filecontent)
 
         # Run SHOP
-        shop = self.to_shopsession(**shopsession_kwargs)
+        shop = self.to_shopsession()
         shop.model.update()
         for c in self.case['commands']:
             self.log_func(c)
+            time.sleep(0.1)  # To prevent delayed print of command in Jupyter
             shop.shop_api.ExecuteCommand(c)
         shop.model.update()
 
@@ -164,10 +153,10 @@ class ShopCaseBaseClass:
         """ Create a new ShopCase instance from a deep copy of self.case."""
         return self.__class__(deepcopy(self.case))
 
-    def to_shopsession(self, **shopsession_kwargs) -> ShopSession:
-        
-        shop = ShopSession(**shopsession_kwargs)
+    def to_shopsession(self) -> pyshop.ShopSession:
 
+        shop = self.shop_init_func()
+        
         commands_to_call_before_object_creation = ['set newgate /off']
         for c in commands_to_call_before_object_creation:
             if c in self.case['commands']:
@@ -327,13 +316,24 @@ class ShopCaseBaseClass:
 
         return df
 
+    def expand_timeseries(self, freq: str = '15T'):
+        """ Expand all time to include all time steps between starttime and 
+        endtime with the given frequency.
+
+        Note that this may distort the aggregate sum of e.g. startup costs.        
+        """
+        for obj_type, obj_name, attr, value in self._crawl_model():
+            if isinstance(value, pd.Series) and isinstance(value.index, pd.DatetimeIndex):
+                value.loc[self.case['time']['endtime']] = value.iloc[-1]
+                self.case['model'][obj_type][obj_name][attr] = value.resample('15T').ffill()
+
     def show_topology(self) -> Digraph:
-            
+
         dot = Digraph(comment='SHOP topology')
-        
+
         Node = namedtuple('Node', ['type', 'label', 'name'])
         Edge = namedtuple('Edge', ['relation', 'start', 'end'])
-        
+
         default_node_attrs = {'shape': 'ellipse', 'fillcolor': '#ffffff', 'style': ''}
         node_attrs = {
             'plant': {'shape': 'box', 'fillcolor': '#FF9999', 'style': 'filled'},
@@ -341,32 +341,37 @@ class ShopCaseBaseClass:
             'junction': {'shape': 'point', 'fillcolor': '#ffffff', 'style': ''},
             'junction_gate': {'shape': 'point', 'fillcolor': '#ffffff', 'style': ''}
         }
-        
+
         def get_edge_style(e: Edge):
             if 'gate' in [e.start.type, e.end.type] and e.relation == 'connection_standard':
                 return 'dashed'
             return 'solid'  
-        
+
         nodes = set()
         edges = set()
-        
+
         for obj_type in self.case['connections']:
             for obj_name, conn in self.case['connections'][obj_type].items():
                 node1 = Node(type=obj_type, label=obj_name, name=f'{obj_type}_{obj_name}')
                 nodes.add(node1)
-                
-                for obj_type2, obj_name2, conn_type in conn:
+
+                for c in conn:
+                    obj_type2 = c['upstream_obj_type']
+                    obj_name2 = c['upstream_obj_name']
+                    conn_type = c['connection_type']
+                    
                     node2 = Node(type=obj_type2, label=obj_name2, name=f'{obj_type2}_{obj_name2}')
-                    edge = Edge(relation=conn_type, start=node1, end=node2)         
+                    edge = Edge(relation=conn_type, start=node2, end=node1)         
+                    
                     nodes.add(node2)
                     edges.add(edge)
-                
+
         for n in nodes:
             dot.node(n.name, label=n.label, **node_attrs.get(n.type, default_node_attrs))
-                
+
         for e in edges:
             dot.edge(e.start.name, e.end.name, style=get_edge_style(e))
-            
+
         return dot
 
     def to_file(self, filename: Union[str, Path] = 'case.shop.zip'):
@@ -424,7 +429,7 @@ class ShopCaseBaseClass:
                     value = self.case['model'][obj_type][obj_name][attr]
                     yield obj_type, obj_name, attr, value
         
-    def _from_shopsession(self, shop: ShopSession):
+    def _from_shopsession(self, shop: pyshop.ShopSession):
         d = {
             'model': self._get_model(shop), 
             'connections': self._get_connections(shop),
@@ -434,15 +439,14 @@ class ShopCaseBaseClass:
 
         self.case = deepcopy(d)  # Necessary?
 
-    def _get_model(self, shop: ShopSession) -> Dict:
+    def _get_model(self, shop: pyshop.ShopSession) -> Dict:
         """ Dump all data in ShopSession.model to nested dict. """
 
         shop.model.update()
         
-        obj_list = sorted(
+        obj_list = list(
             zip(shop.shop_api.GetObjectTypesInSystem(), 
-                shop.shop_api.GetObjectNamesInSystem()), 
-            key=lambda x: x[0]+x[1]
+                shop.shop_api.GetObjectNamesInSystem())
         )
         
         model = dict()
@@ -468,7 +472,7 @@ class ShopCaseBaseClass:
     
         return model   
             
-    def _get_connections(self, shop: ShopSession) -> Dict:
+    def _get_connections(self, shop: pyshop.ShopSession) -> Dict:
         obj_list = list(
             zip(shop.shop_api.GetObjectTypesInSystem(), 
                 shop.shop_api.GetObjectNamesInSystem())
@@ -510,45 +514,6 @@ class ShopCaseBaseClass:
                                                                   'connection_type': relation['conn_type']}]
                     
         return connections
-    #    obj_list = list(
-    #        zip(shop.shop_api.GetObjectTypesInSystem(), 
-    #            shop.shop_api.GetObjectNamesInSystem())
-    #    )
-    #    obj_dicts = [{'obj_type': x[0], 'obj_name': x[1]} for x in obj_list]
-    #    
-    #    connections = {}
-    #
-    #    for to_obj_type, to_obj_name in obj_list:
-    #        if shop.shop_api.GetObjectInfo(to_obj_type, 'isInput') == 'False':
-    #            continue
-#
-    #        input_relations = []
-    #        for conn_type in shop.shop_api.GetValidRelationTypes(to_obj_type):
-    #            # Use input relations in order to ensure connection order is preserved in cases where this matter
-    #            # E.g. Junctions where tunnel_loss_1 might differ from tunnel_loss_2 and so on
-    #            relations = shop.shop_api.GetInputRelations(to_obj_type, to_obj_name, conn_type)
-    #            
-    #            if not relations:
-    #                continue
-    #            
-    #            for r in relations:
-    #                new_relation = dict(obj_dicts[r])
-    #                new_relation["conn_type"] = conn_type
-    #                input_relations.append(new_relation)
-    #                
-    #        if input_relations:
-    #            # It is natural to list relation in from-to order, so we need to flip the retrieved input relations
-    #            for relation in input_relations:
-    #                if not relation['obj_type'] in connections:
-    #                    connections[relation['obj_type']] = {}
-    #                if relation['obj_name'] in connections[relation['obj_type']]:
-    #                    connections[relation['obj_type']][relation['obj_name']].append([to_obj_type, to_obj_name,
-    #                                                                                    relation['conn_type']])
-    #                else:
-    #                    connections[relation['obj_type']][relation['obj_name']] = [[to_obj_type, to_obj_name,
-    #                                                                                relation['conn_type']]]
-    #                
-    #    return connections
 
     def _to_json_type(self, x):
         """ Convert value x into JSON type(s). """

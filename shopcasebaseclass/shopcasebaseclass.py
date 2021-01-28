@@ -96,7 +96,6 @@ class ShopCaseBaseClass:
             self._from_dir(source)
         elif isinstance(source, (str, Path)) and '.shop.zip' in Path(source).name:
             self._from_file(source)
-
         
     def run(
         self, 
@@ -122,9 +121,10 @@ class ShopCaseBaseClass:
         shop = self.to_shopsession()
         shop.model.update()
         for c in self.case['commands']:
-            self.log_func(c)
-            time.sleep(0.1)  # To prevent delayed print of command in Jupyter
-            shop.shop_api.ExecuteCommand(c)
+            if c and not c[0] == '#':
+                self.log_func(c)
+                time.sleep(0.1)  # To prevent delayed print of command in Jupyter
+                shop.shop_api.ExecuteCommand(c)
         shop.model.update()
 
         # Preserve custom fields in self.case
@@ -327,7 +327,14 @@ class ShopCaseBaseClass:
                 value.loc[self.case['time']['endtime']] = value.iloc[-1]
                 self.case['model'][obj_type][obj_name][attr] = value.resample('15T').ffill()
 
-    def show_topology(self) -> Digraph:
+    def show_topology(self, jupyter_scalable=False) -> Digraph:
+        """ 
+        parameters
+        ----------
+        jupyter_scalable : bool
+            Return an string HTML div with a PNG image. Necessary for scaling 
+            the topology to fit the width of a jupyter notebook.
+        """
 
         dot = Digraph(comment='SHOP topology')
 
@@ -371,6 +378,13 @@ class ShopCaseBaseClass:
 
         for e in edges:
             dot.edge(e.start.name, e.end.name, style=get_edge_style(e))
+
+        if jupyter_scalable:
+            from IPython.display import HTML
+            import base64
+            top = self.show_topology()
+            top.format = 'png'
+            return HTML(f'<img width="100%" src="data:image/png;base64,{base64.b64encode(top.pipe()).decode()}" >')
 
         return dot
 

@@ -19,65 +19,58 @@ from graphviz import Digraph
 import pyshop  # type: ignore
 
 
+class DictImitator:
+    """ To enable .<tab> completion of ShopCase.case in Jupyter. """
+    
+    def __init__(self, **kwargs):
+        self.__dict__.update(kwargs)
+        for key, value in self.__dict__.items():
+            if isinstance(value, dict):
+                self.__dict__[key] = DictImitator(**value)
+                
+    def __repr__(self):
+        return self.__dict__.__repr__()
+    
+    def __getitem__(self, key):
+        return self.__getattribute__(key)
+        
+    def __setitem__(self, key, value):
+        self.__setattr__(key, value)
+        
+    def __setattr__(self, key, value):
+        self.__dict__[key] = DictImitator(**value) if isinstance(value, dict) else value
+        
+    def __iter__(self):
+        return self.__dict__.__iter__()
+
+    def __len__(self):
+        return len(self.__dict__)
+    
+    def keys(self):
+        return self.__dict__.keys()
+    
+    def items(self):
+        return self.__dict__.items()
+    
+    def values(self):
+        return self.__dict__.values()
+
+    def update(self, d):
+        self.__dict__.update(d)
+
+    def pop(self, key):
+        return self.__dict__.pop(key)
+    
+    def to_dict(self):
+        d = {}
+        for k, v in self.items():
+            if isinstance(v, self.__class__):
+                v = v.to_dict()
+            d[k] = v
+        return d
+
+
 class ShopCaseBaseClass:
-    """ Parent class for local ShopCase implementation.
-
-    ## What this is
-    ShopCase is a data structure for SHOP model data. The term 'case' in ShopCase
-    refers to a consistent data set that can form a single ShopSession instance. 
-
-    When saved to disk, the convention is to use the file extention .shop.zip,
-    e.g. 'mycase.shop.zip'. The zip format is used to compress the data, and 
-    the .zip part of the file extention is used to facilitate manual inspection 
-    of the files without extracting the archive. the .shop. part of the file 
-    extention is meant to separate these standardized files from any other 
-    zip files.
-
-    ## Background
-    ShopCase is developed to overcome limitations in the traditional files used 
-    by SHOP (ASCII files etc.).
-
-    The foreseen benefits of ShopCase compared to SHOP cases based on ASCII 
-    files are:
-    - machine readable based on common standards and data structures
-    - human readable, where all object attributes are explicitly named
-    - can be inspected and modified independent of shop/pyshop availability and
-      ShopSession initiation
-    - case data can be serialized and passed between different services, thus 
-      enbling a functional split between case creation, optimization, 
-      evaluation and visualization
-    - the complete inputs and outputs of a Shop optimization is stored in a single 
-      consistent data structure or file, enabling reproducability
-    - the data is compressed when saved to a file
-
-    ## Inheriting from this class
-    This class defines the internal data structure of a ShopCase instance, and 
-    some methods that should NOT be overridden (to ensure tha case data is valid
-    between different implementations of ShopCase):
-    - to_shopsession : method for generating a ShopSession instance based on a ShopCase
-    - from_shopsession : method for initiating a ShopCase instance from a ShopSession
-    - to_file : exporting ShopCase data to a .shop.zip file
-    - from_file : initiation a ShopCase instance from a .shop.zip file
-
-    In addition the class defines methods that can be overridden based on 
-    local implementation:
-    - run : method for running the ShopCase
-    - copy : make a deep copy of the case
-
-    Classes derived from this base class can be made to contain custom fields 
-    under <ShopCase>.case that will be preserved through copying and running the 
-    ShopCase instance, but these data must be json serializable. Each such 
-    field will be stored as a separate .yaml file when the case is saved to a 
-    .shop.zip file.
-
-    Proposal for class design guidelines:
-    - Most methods should return self, to facilitate method chaining, e.g. 
-      ShopCase('mycase.shop.zip').run().
-    - The run method should insert the optimization results into the current 
-      instance (and all previous results removed). If you want to preserve the 
-      original state, then use <ShopCase>.copy().run().
-
-    """
     
     def __init__(self, source):
         self.case = None
@@ -86,7 +79,7 @@ class ShopCaseBaseClass:
 
         if isinstance(source, pyshop.ShopSession):
             self._from_shopsession(source)
-        elif isinstance(source, dict):
+        elif isinstance(source, (dict, DictImitator)):
             self.case = source
         elif isinstance(source, bytes):
             self._from_bytestring(source)
@@ -96,7 +89,25 @@ class ShopCaseBaseClass:
             self._from_dir(source)
         elif isinstance(source, (str, Path)) and '.shop.zip' in Path(source).name:
             self._from_file(source)
+
+        self.case = DictImitator(**self.case)
         
+    @property
+    def model(self):
+        return self.case['model']
+
+    @property
+    def time(self):
+        return self.case['time']
+
+    @property
+    def commands(self):
+        return self.case['commands']
+
+    @property
+    def connections(self):
+        return self.case['connections']
+
     def run(
         self, 
         shopdir=None) -> pyshop.ShopSession:
@@ -119,17 +130,18 @@ class ShopCaseBaseClass:
 
         # Run SHOP
         shop = self.to_shopsession()
-        shop.model.update()
+        #shop.model.update()
         for c in self.case['commands']:
             if c and not c[0] == '#':
                 self.log_func(c)
                 time.sleep(0.1)  # To prevent delayed print of command in Jupyter
-                shop.shop_api.ExecuteCommand(c)
-        shop.model.update()
+                shop.execute_full_command(c)  #shop_api.ExecuteCommand(c)
+        #shop.model.update()
 
         # Preserve custom fields in self.case
         _old_case = self.case 
         self._from_shopsession(shop)
+        self.case = DictImitator(**self.case)
         for i in _old_case:
             if i not in self.case:
                 self.case[i] = _old_case[i]
@@ -161,7 +173,7 @@ class ShopCaseBaseClass:
         for c in commands_to_call_before_object_creation:
             if c in self.case['commands']:
                 self.log_func(f'Calling command "{c}"')
-                shop.shop_api.ExecuteCommand(c)
+                shop.execute_full_command(c)
 
         model = self.case['model']
 
@@ -220,6 +232,15 @@ class ShopCaseBaseClass:
 
         return shop
 
+    def show_objects_in_model(self):
+        indent = ' '
+        for k, v in self.case['model'].items():
+            print(k)
+            if not isinstance(v, (dict, DictImitator)):
+                continue
+            for k2, v2 in v.items():
+                print(indent, k2)          
+
     def diff(self, other: 'ShopCaseBaseClass', tolerance: float = 0.1) -> Dict:
         """ Compare the data in two ShopCases and return a dict with the same 
         structure as ShopCase.case indicating where the data is different.
@@ -242,7 +263,7 @@ class ShopCaseBaseClass:
         for i in set(left) | set(right):
             if i not in right or i not in left:
                 diffs[i] = True
-            elif isinstance(left[i], dict):
+            elif isinstance(left[i], (dict, DictImitator)):
                 res = cls._compare(left[i], right[i], tolerance)
                 if res:
                     diffs[i] = res
@@ -269,7 +290,7 @@ class ShopCaseBaseClass:
                 return ((_i - _j).abs().max() > tolerance) or (_i - _j).isna().any()
             except ValueError:
                 raise ValueError
-        if isinstance(i, dict):
+        if isinstance(i, (dict, DictImitator)):
             return cls._compare(i, j, tolerance)
         if isinstance(i, list):
             if len(i) != len(j):
@@ -456,7 +477,7 @@ class ShopCaseBaseClass:
     def _get_model(self, shop: pyshop.ShopSession) -> Dict:
         """ Dump all data in ShopSession.model to nested dict. """
 
-        shop.model.update()
+        #shop.model.update()
         
         obj_list = list(
             zip(shop.shop_api.GetObjectTypesInSystem(), 
@@ -584,6 +605,7 @@ class ShopCaseBaseClass:
     def _get_dict_with_json_types(self):
 
         s = self.copy()
+        s.case = s.case.to_dict()
         d = s.case
         
         for i in d['time']:
@@ -610,7 +632,7 @@ class ShopCaseBaseClass:
         
         # Convert model data to pandas Series      
         for obj_type, obj_name, attr, value in self._crawl_model():
-            if isinstance(value, dict):
+            if isinstance(value, (dict, DictImitator)):
                 # Stochastic TXY
                 if f'{"Scenario #":>19}' in value:
                     value_copy = dict(value)

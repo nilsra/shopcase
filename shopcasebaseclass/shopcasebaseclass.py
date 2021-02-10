@@ -348,7 +348,7 @@ class ShopCaseBaseClass:
                 value.loc[self.case['time']['endtime']] = value.iloc[-1]
                 self.case['model'][obj_type][obj_name][attr] = value.resample('15T').ffill()
 
-    def show_topology(self, jupyter_scalable=False) -> Digraph:
+    def show_topology(self, jupyter_scalable=False, width='100%') -> Digraph:
         """ 
         parameters
         ----------
@@ -405,7 +405,7 @@ class ShopCaseBaseClass:
             import base64
             top = self.show_topology()
             top.format = 'png'
-            return HTML(f'<img width="100%" src="data:image/png;base64,{base64.b64encode(top.pipe()).decode()}" >')
+            return HTML(f'<img width="width" src="data:image/png;base64,{base64.b64encode(top.pipe()).decode()}" >')
 
         return dot
 

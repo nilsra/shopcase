@@ -4,4 +4,6 @@ poetry.lock
 .pytest_cache
 .spyproject
 dev
-*/__pycache__
+__pycache__
+*.bat
+.ipynb_checkpoints

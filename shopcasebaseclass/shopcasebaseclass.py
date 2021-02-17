@@ -131,21 +131,26 @@ class ShopCaseBaseClass:
 
         # Run SHOP
         shop = self.to_shopsession()
-        #shop.model.update()
         for c in self.case['commands']:
             if c and not c[0] == '#':
                 self.log_func(c)
                 time.sleep(0.1)  # To prevent delayed print of command in Jupyter
-                shop.execute_full_command(c)  #shop_api.ExecuteCommand(c)
-        #shop.model.update()
+                shop.execute_full_command(c) 
+
+        # Reverse ownership scaling
+        # https://shop.sintef.energy/discussions/shop-api-pyshop/re-running-cases-when-ownership-is-not-100/
+        # Don't use as owmnership will be set to 100 % for all plants, waiting for a change
+        # Nils Ræder, 2021-02-17
+        #shop.execute_full_command('reset ownership')
 
         # Preserve custom fields in self.case
         _old_case = self.case 
         self._from_shopsession(shop)
-        self.case = DictImitator(**self.case)
         for i in _old_case:
             if i not in self.case:
                 self.case[i] = _old_case[i]
+
+        self.case = DictImitator(**self.case)
 
         # Save the logs
         self.case['logs'] = {}
@@ -258,8 +263,10 @@ class ShopCaseBaseClass:
         to 0.1, and should be less than 1 to catch differences in binary values
         like unit commitment.
         """
-    
-        return self._compare(self.case, other.case, tolerance)
+        to_compare = ['model', 'connections', 'time', 'commands']
+        case1 = dict([(i, self.case[i]) for i in to_compare])
+        case2 = dict([(i, other.case[i]) for i in to_compare])
+        return self._compare(case1, case2, tolerance)
 
     @classmethod
     def _compare(cls, left, right, tolerance: float = 0.0):
@@ -294,7 +301,7 @@ class ShopCaseBaseClass:
                 # Dropping consecutive identical values before we compare data
                 _i = i[i != i.shift(1)].dropna()
                 _j = j[j != j.shift(1)].dropna()
-                return ((_i - _j).abs().max() > tolerance) or (_i - _j).isna().any()
+                return bool(((_i - _j).abs().max() > tolerance) or (_i - _j).isna().any())
             except ValueError:
                 raise ValueError
         if isinstance(i, (dict, DictImitator)):
@@ -640,9 +647,15 @@ class ShopCaseBaseClass:
         time = self.case['time']
         
         # Convert time data to types expected by pyshop
-        if not isinstance(time['timeresolution'], (str, pd.Series)):
-            time['timeresolution'] = pd.Series(time['timeresolution'])  
-            time['timeresolution'].index = pd.to_datetime(time['timeresolution'].index)
+        if isinstance(time['timeresolution'], (dict, DictImitator)):
+            x = time['timeresolution']
+            time['timeresolution'] = pd.Series(
+                x['value'], index=x['index'], name=x['name']
+                )
+
+        #if not isinstance(time['timeresolution'], pd.Series):  #(str, pd.Series)):
+        #    time['timeresolution'] = pd.Series(time['timeresolution'])  
+        #    time['timeresolution'].index = pd.to_datetime(time['timeresolution'].index)
             
         time['starttime'] = pd.Timestamp(time['starttime'])
         time['endtime'] = pd.Timestamp(time['endtime'])

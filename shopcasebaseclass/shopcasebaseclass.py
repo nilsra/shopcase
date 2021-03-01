@@ -1,13 +1,18 @@
 
+from __future__ import annotations
+
+from typing import ByteString, Union, Dict
 
 import os
+import sys
 import json
 import zipfile
 import tempfile
 import time
+import logging
+import uuid
 from copy import deepcopy
 from pathlib import Path
-from typing import ByteString, Union, Dict, List
 from collections import namedtuple
 from io import BytesIO
 
@@ -70,11 +75,27 @@ class DictImitator:
         return d
 
 
-class ShopCaseBaseClass:
+class LoggingHandler:
+    def __init__(self):
+        self.log = logging.getLogger('ShopCase')
+        self.log.setLevel(logging.DEBUG)
+        if len(self.log.handlers) == 0:
+            handler = logging.StreamHandler(stream=sys.stdout)
+            handler.setFormatter(
+                logging.Formatter(
+                    f'%(asctime)s | %(levelname)s | %(module)s.%(funcName)s | %(message)s')
+            )
+            self.log.addHandler(handler)
+
+
+class ShopCaseBaseClass(LoggingHandler):
     
-    def __init__(self, source):
+    def __init__(self, source, **metadata):
+
+        super().__init__()
+        self.log.info(f'Init ShopCase : source_type={type(source)}')
+
         self.case = None
-        self.log_func = print
         self.shop_init_func = lambda: pyshop.ShopSession()
 
         if isinstance(source, pyshop.ShopSession):
@@ -92,6 +113,11 @@ class ShopCaseBaseClass:
 
         if isinstance(self.case, dict):
             self.case = DictImitator(**self.case)
+
+        if not 'metadata' in self.case:
+            self.case['metadata'] = DictImitator()
+        self.case['metadata']['id'] = str(uuid.uuid1())
+        self.case['metadata'].update(metadata)
         
     @property
     def model(self):
@@ -109,10 +135,18 @@ class ShopCaseBaseClass:
     def connections(self):
         return self.case['connections']
 
+    @property
+    def ascii(self):
+        return self.case['ascii']
+
     def run(
         self, 
-        shopdir=None) -> pyshop.ShopSession:
+        shopdir=None,
+        save_results_per_iteration: bool = False
+        ) -> pyshop.ShopSession:
         """ Run the ShopCase in pyshop, and update self with the new results. """
+
+        results_per_iteration = []
 
         # Move to a temporary directory
         _cwd = os.getcwd()
@@ -124,17 +158,20 @@ class ShopCaseBaseClass:
             shopdir = _cwd()
         self.shopdir = shopdir
 
-        # Save the cut files (if any)
-        if 'cutfiles' in self.case:
-            for filename, filecontent in self.case['cutfiles'].items():
-                Path(filename).write_text(filecontent)
-
         # Run SHOP
         shop = self.to_shopsession()
         for c in self.case['commands']:
-            if c and not c[0] == '#':
-                self.log_func(c)
-                time.sleep(0.1)  # To prevent delayed print of command in Jupyter
+            if not c.strip() or c.strip()[0] == '#':
+                continue
+            time.sleep(0.1)  # To prevent delayed print of command in Jupyter
+            if 'start sim' in c:
+                for i in range(int(c.split(' ')[-1])):
+                    self.log.info(f'Calling command "start sim 1"')
+                    shop.execute_full_command('start sim 1') 
+                    if save_results_per_iteration:
+                        results_per_iteration.append(ShopCaseBaseClass(shop))
+            else:
+                self.log.info(f'Calling command "{c}"')
                 shop.execute_full_command(c) 
 
         # Reverse ownership scaling
@@ -161,6 +198,9 @@ class ShopCaseBaseClass:
         # Return to previous working directory
         os.chdir(_cwd)
 
+        if results_per_iteration:
+            return results_per_iteration
+
         return shop
 
     def open_shopdir(self):
@@ -184,7 +224,7 @@ class ShopCaseBaseClass:
         commands_to_call_before_object_creation = ['set newgate /off']
         for c in commands_to_call_before_object_creation:
             if c in self.case['commands']:
-                self.log_func(f'Calling command "{c}"')
+                self.log.info(f'Calling command "{c}"')
                 shop.execute_full_command(c)
 
         model = self.case['model']
@@ -227,24 +267,23 @@ class ShopCaseBaseClass:
                                                   connection_map['connection_type'], to_type, to_name)
 
                     except ValueError:
-                        self.log_func(f'to_shopsession : could not connect '
-                                      f'from_type={connection_map["upstream_obj_type"]}, '
-                                      f'from_name={connection_map["upstream_obj_name"]}, '
-                                      f'conn_type={connection_map["connection_type"]}, '
-                                      f'to_type={to_type}, '
-                                      f'to_name={to_name}')
-        #conn = self.case['connections']
-        #for from_type in conn:
-        #    for from_name in conn[from_type]:
-        #        for to_type, to_name, conn_type in conn[from_type][from_name]:
-        #            try:
-        #                shop.shop_api.AddRelation(from_type, from_name, conn_type, to_type, to_name)
-        #            except ValueError:
-        #                self.log_func(f'to_shopsession : could not connect from_type={from_type}, from_name={from_name}, conn_type={conn_type}, to_type={to_type}, to_name={to_name}')
+                        self.log.error(f'to_shopsession : could not connect '
+                            f'from_type={connection_map["upstream_obj_type"]}, '
+                            f'from_name={connection_map["upstream_obj_name"]}, '
+                            f'conn_type={connection_map["connection_type"]}, '
+                            f'to_type={to_type}, '
+                            f'to_name={to_name}')
+
+        # Load any ascii data
+        if 'ascii' in self.case:
+            for i in self.case['ascii']:
+                self.log.info(f'Loading ASCII string {i["name"]}')
+                shop.shop_api.ReadShopAsciiString(i['content'])
 
         return shop
 
-    def show_objects_in_model(self):
+    def describe(self):
+        print('### Objects in model ###')
         indent = ' '
         for k, v in self.case['model'].items():
             print(k)
@@ -253,7 +292,7 @@ class ShopCaseBaseClass:
             for k2, v2 in v.items():
                 print(indent, k2)          
 
-    def diff(self, other: 'ShopCaseBaseClass', tolerance: float = 0.1) -> Dict:
+    def diff(self, other: 'ShopCaseBaseClass') -> Dict:
         """ Compare the data in two ShopCases and return a dict with the same 
         structure as ShopCase.case indicating where the data is different.
 
@@ -263,55 +302,67 @@ class ShopCaseBaseClass:
         to 0.1, and should be less than 1 to catch differences in binary values
         like unit commitment.
         """
-        to_compare = ['model', 'connections', 'time', 'commands']
-        case1 = dict([(i, self.case[i]) for i in to_compare])
-        case2 = dict([(i, other.case[i]) for i in to_compare])
-        return self._compare(case1, case2, tolerance)
 
-    @classmethod
-    def _compare(cls, left, right, tolerance: float = 0.0):
-        """ Compare two dictionaries. """
-        
-        diffs = {}
-        
-        for i in set(left) | set(right):
-            if i not in right or i not in left:
-                diffs[i] = True
-            elif isinstance(left[i], (dict, DictImitator)):
-                res = cls._compare(left[i], right[i], tolerance)
-                if res:
-                    diffs[i] = res
-            else:
-                status = cls._is_different(left[i], right[i], tolerance)
-                if status:
-                    diffs[i] = status
-                    
-        return diffs
+        def _are_equal_despite_different_types(i, j):
+            if isinstance(i, pd.Series) and (len(set(i.round(5))) == 1):
+                i = i.iloc[0]
+            if isinstance(j, pd.Series) and (len(set(j.round(5))) == 1):
+                j = j.iloc[0]
+            if isinstance(i, pd.Series) or isinstance(j, pd.Series):
+                return False
+            return i == j
 
-    @classmethod           
-    def _is_different(cls, i, j, tolerance: float = 0.0):
-        """ Compare two objects. """
+        def _series_are_equal(i: pd.Series, j: pd.Series):
+            if not type(i.index) is type(j.index):
+                return False
+            if i.index.has_duplicates or j.index.has_duplicates:
+                return i.round(4).equals(i.round(4))
+            common_index = i.index | j.index
+            i = i.reindex(common_index).ffill()
+            j = j.reindex(common_index).ffill()
+            return (i - j).abs().max() < 0.0001
 
-        if not type(i) is type(j):
-            return True
-        if isinstance(i, (int, float, str, pd.Timestamp)):
-            return i != j
-        if isinstance(i, pd.Series):
-            try:
-                # Dropping consecutive identical values before we compare data
-                _i = i[i != i.shift(1)].dropna()
-                _j = j[j != j.shift(1)].dropna()
-                return bool(((_i - _j).abs().max() > tolerance) or (_i - _j).isna().any())
-            except ValueError:
-                raise ValueError
-        if isinstance(i, (dict, DictImitator)):
-            return cls._compare(i, j, tolerance)
-        if isinstance(i, list):
-            if len(i) != len(j):
-                return True
-            return any([cls._is_different(m, n, tolerance) for m, n in zip(i, j)])
-        
-        raise ValueError(f'Type not specified in is_equal : {i}={type(i)}')
+        def _compare(left, right):
+            """ Compare two dictionaries. """
+            
+            diffs = {}
+            
+            for i in set(left) | set(right):
+                if i not in right or i not in left:
+                    diffs[i] = True
+                elif isinstance(left[i], (dict, DictImitator)):
+                    res = _compare(left[i], right[i])
+                    if res:
+                        diffs[i] = res
+                else:
+                    status = _is_different(left[i], right[i])
+                    if status:
+                        diffs[i] = status
+                        
+            return diffs
+       
+        def _is_different(i, j):
+            """ Compare two objects. """
+
+            if not type(i) is type(j):
+                return not _are_equal_despite_different_types(i, j)
+            if isinstance(i, (int, float, str, pd.Timestamp)):
+                return i != j
+            if isinstance(i, pd.Series):
+                return not _series_are_equal(i, j)
+            if isinstance(i, (dict, DictImitator)):
+                return _compare(i, j)
+            if isinstance(i, list):
+                if len(i) != len(j):
+                    return True
+                return any([_is_different(m, n) for m, n in zip(i, j)])
+            
+            raise ValueError(f'Type not specified in is_equal : {i}={type(i)}')
+
+        skip = ['attr_info', 'objtype_info']
+        case1 = dict([(i, self.case[i]) for i in self.case if not i in skip])
+        case2 = dict([(i, other.case[i]) for i in other.case if not i in skip])
+        return _compare(case1, case2)
 
     def drop_mc_data(self):
         """ Drop the large data sets to make it feasible to serialize data to disk. """
@@ -436,8 +487,12 @@ class ShopCaseBaseClass:
                 f.writestr(f'{key}.yaml', yaml.dump(value, allow_unicode=True, encoding='UTF-8', sort_keys=False)) #.encode('utf-8')
         return b.getvalue()
 
-    def to_json(self):
-        return json.dumps(self._get_dict_with_json_types(), ensure_ascii=False)
+    def to_json(self, indent=4):
+        return json.dumps(
+            self._get_dict_with_json_types(), 
+            ensure_ascii=False, 
+            indent=indent
+            )
 
     def to_yaml_files(self, path: Union[str, Path]) -> Path:
         path = Path(path)
@@ -502,8 +557,6 @@ class ShopCaseBaseClass:
 
     def _get_model(self, shop: pyshop.ShopSession) -> Dict:
         """ Dump all data in ShopSession.model to nested dict. """
-
-        #shop.model.update()
         
         obj_list = list(
             zip(shop.shop_api.GetObjectTypesInSystem(), 
@@ -516,7 +569,7 @@ class ShopCaseBaseClass:
             try: 
                 obj = shop.model[obj_type][obj_name]
             except AttributeError:
-                self.log_func(f'_get_model : Could not get shop.model[{obj_type}][{obj_name}]')
+                self.log.error(f'_get_model : Could not get shop.model[{obj_type}][{obj_name}]')
                 continue
 
             attrs = obj.datatype_dict
@@ -648,14 +701,9 @@ class ShopCaseBaseClass:
         
         # Convert time data to types expected by pyshop
         if isinstance(time['timeresolution'], (dict, DictImitator)):
-            x = time['timeresolution']
-            time['timeresolution'] = pd.Series(
-                x['value'], index=x['index'], name=x['name']
-                )
-
-        #if not isinstance(time['timeresolution'], pd.Series):  #(str, pd.Series)):
-        #    time['timeresolution'] = pd.Series(time['timeresolution'])  
-        #    time['timeresolution'].index = pd.to_datetime(time['timeresolution'].index)
+            #x = time['timeresolution']
+            time['timeresolution'] = pd.Series(dict(time['timeresolution']))
+            time['timeresolution'].index = pd.to_datetime(time['timeresolution'].index)
             
         time['starttime'] = pd.Timestamp(time['starttime'])
         time['endtime'] = pd.Timestamp(time['endtime'])

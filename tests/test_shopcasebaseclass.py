@@ -3,40 +3,31 @@ from pathlib import Path
 
 from shopcasebaseclass import ShopCaseBaseClass
 
+DEFAULT_DIFF_OF_COPY = "{'metadata': {'id': True}}"
 
-def _load_testdata():
-    """ Returning basic.py as a JSON string. """
-    with open(Path(__file__).parent / 'testmodel_basic.json', 'r') as f:
-        return f.read()
 
 
 def _load_testcase():
     """ Return basic.py as a ShopCaseBaseClass instance. """
-    return ShopCaseBaseClass(_load_testdata())
+    return ShopCaseBaseClass(Path(__file__).parent / 'data')
 
 
-def test_case_from_json():
-    s = ShopCaseBaseClass(_load_testdata)
+def test_case_from_yaml_files():
+    s = _load_testcase()
     assert isinstance(s, ShopCaseBaseClass)
 
 
 def test_copy():
     s1 = _load_testcase()
     s2 = s1.copy()
-    assert (s1 is not s2) and (s1.case is not s2.case)
+    assert str(s1.diff(s2)) == DEFAULT_DIFF_OF_COPY
 
 
-def test_diff():
+def test_copy_and_diff():
     s1 = _load_testcase()
     s2 = s1.copy()
     s2.case['model']['reservoir']['Reservoir1']['inflow'] += 1
-    assert str(s1.diff(s2)) == "{'model': {'reservoir': {'Reservoir1': {'inflow': True}}}}"
-
-
-def test_copy2():
-    s1 = _load_testcase()
-    s2 = s1.copy()
-    assert s1.diff(s2, tolerance=0.0001) == {}
+    assert str(s1.diff(s2)) == "{'metadata': {'id': True}, 'model': {'reservoir': {'Reservoir1': {'inflow': True}}}}"
 
 
 def test_run():
@@ -46,8 +37,14 @@ def test_run():
     assert status == 'Optimal solution is available'
 
 
+def test_to_json():
+    s1 = _load_testcase()
+    s2 = ShopCaseBaseClass(s1.to_json())
+    assert str(s1.diff(s2)) == DEFAULT_DIFF_OF_COPY
+
+
 def test_to_bytestring():
     s1 = _load_testcase()
     s2 = ShopCaseBaseClass(s1._to_bytestring())
-    assert s1.diff(s2, tolerance=0.0001) == {}
+    assert str(s1.diff(s2)) == DEFAULT_DIFF_OF_COPY
     

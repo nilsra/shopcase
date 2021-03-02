@@ -1,5 +1,9 @@
-endtime: '2021-03-15 00:00:00'
-starttime: '2021-03-01 04:00:00'
-timeresolution:
-  '2000-01-01': 1
+starttime: '2018-02-27 00:00:00'
+endtime: '2018-02-28 00:00:00'
 timeunit: hour
+timeresolution:
+  x:
+  - '0'
+  y:
+  - 1.0
+  ref: null

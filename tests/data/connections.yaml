@@ -1,23 +1,23 @@
-generator:
-  Plant1_G1:
-  - connection_type: generator_of_plant
-    upstream_obj_name: Plant1
-    upstream_obj_type: plant
-  Plant2_G1:
-  - connection_type: generator_of_plant
-    upstream_obj_name: Plant2
-    upstream_obj_type: plant
 plant:
   Plant1:
-  - connection_type: connection_standard
+  - upstream_obj_type: reservoir
     upstream_obj_name: Reservoir1
-    upstream_obj_type: reservoir
+    connection_type: connection_standard
   Plant2:
-  - connection_type: connection_standard
+  - upstream_obj_type: reservoir
     upstream_obj_name: Reservoir2
-    upstream_obj_type: reservoir
+    connection_type: connection_standard
+generator:
+  Plant1_G1:
+  - upstream_obj_type: plant
+    upstream_obj_name: Plant1
+    connection_type: generator_of_plant
+  Plant2_G1:
+  - upstream_obj_type: plant
+    upstream_obj_name: Plant2
+    connection_type: generator_of_plant
 reservoir:
   Reservoir2:
-  - connection_type: connection_standard
+  - upstream_obj_type: plant
     upstream_obj_name: Plant1
-    upstream_obj_type: plant
+    connection_type: connection_standard

@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "shopcasebaseclass"
-version = "0.2.0"
+version = "0.3.0"
 description = ""
 authors = ["a165963 <Nils.Rader@hydro.com>"]
 

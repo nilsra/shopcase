@@ -494,6 +494,18 @@ class ShopCaseBaseClass(LoggingHandler):
             indent=indent
             )
 
+    def to_yaml_string(self) -> str:
+        d = self._get_dict_with_json_types()
+        for i in ['attr_info', 'objtype_info']:
+            if i in d:
+                d.pop(i)
+        return yaml.safe_dump(
+            d,
+            allow_unicode=True, 
+            encoding='UTF-8', 
+            sort_keys=False
+            ).decode()
+        
     def to_yaml_files(self, path: Union[str, Path]) -> Path:
         path = Path(path)
         if not path.exists():
@@ -536,14 +548,24 @@ class ShopCaseBaseClass(LoggingHandler):
                     yield obj_type, obj_name, attr, value
         
     def _from_shopsession(self, shop: pyshop.ShopSession):
-        d = {
-            'model': self._get_model(shop), 
-            'connections': self._get_connections(shop),
-            'time': shop.get_time_resolution(),
-            'commands': shop.get_executed_commands()
+        fields = {
+            'model': {'func': self._get_model, 'default': {}},
+            'connections': {'func': self._get_connections, 'default': {}},
+            'time': {'func': self._get_time, 'default': {}},
+            'commands': {'func': self._get_commands, 'default': []}
             }
+        d = {}
+        for k, v in fields.items():
+            try: 
+                value = v['func'](shop)
+            except Exception as e:
+                self.log.error(f"Couldn't import {k} from ShopSession due to '{e}'")
+                value = v['default']
+            d[k] = value
 
-        self.case = deepcopy(d)  # Necessary?
+        # Necessary? To avoid any reference to the same instances in ShopCase 
+        # and ShopSession
+        self.case = deepcopy(d)  
 
         # Drop identical consecutive values in timeresolution
         x = self.case['time']['timeresolution']
@@ -554,6 +576,12 @@ class ShopCaseBaseClass(LoggingHandler):
         for r in self.case['model']['reservoir'].values():
             if ('start_vol' in r) and ('start_head' in r) and (r['start_head'] > 0):
                 r.pop('start_vol')
+
+    def _get_time(self, shop):
+        return shop.get_time_resolution() 
+
+    def _get_commands(self, shop):
+        return shop.get_executed_commands()
 
     def _get_model(self, shop: pyshop.ShopSession) -> Dict:
         """ Dump all data in ShopSession.model to nested dict. """
@@ -631,6 +659,9 @@ class ShopCaseBaseClass(LoggingHandler):
 
     def _to_json_type(self, x):
         """ Convert value x into JSON type(s). """
+
+        if isinstance(x, (dict, DictImitator)):
+            return dict([(k, self._to_json_type(v)) for k, v in x.items()])
              
         if isinstance(x, pd.Timestamp):
             return str(x)        
@@ -641,16 +672,16 @@ class ShopCaseBaseClass(LoggingHandler):
         if isinstance(x, np.int):
             return int(x)
         
-        if isinstance(x, pd.Series):
-            if isinstance(x.index, pd.DatetimeIndex):
-                s = x[x != x.shift(1)]  #  Drop concecutive identical values 
-                return pd.Series(s.values, index=s.index.to_native_types()).to_dict()
-            else:  # Cannot use to_dict directly as there may be duplicate index values (e.g. for endpoint_desc_nok_mm3)
-                return {
-                    'index': x.index.tolist(), 
-                    'value': x.values.tolist(), 
-                    'name': float(x.name) if isinstance(x.name, np.float64) else str(x.name)
-                    }
+        if isinstance(x, pd.Series) and isinstance(x.index, pd.DatetimeIndex):
+            s = x[x != x.shift(1)]  #  Drop concecutive identical values 
+            return pd.Series(s.values, index=s.index.to_native_types()).to_dict()
+
+        if isinstance(x, pd.Series):  # Will remove duplicate index values (e.g. for endpoint_desc_nok_mm3)
+            return {
+                'x': x.index.to_native_types().tolist(), 
+                'y': x.values.tolist(), 
+                'ref': self._to_json_type(x.name)
+                }
 
         if isinstance(x, pd.DataFrame):
             df = x.loc[(x.shift() != x).all(1)]  # Drop consecutive identical rows
@@ -682,35 +713,30 @@ class ShopCaseBaseClass(LoggingHandler):
         raise TypeError(f'<_to_json_type> : Unrecognized type {type(x)}')
 
     def _get_dict_with_json_types(self):
-
-        s = self.copy()
-        s.case = s.case.to_dict()
-        d = s.case
-        
-        for i in d['time']:
-            d['time'][i] = s._to_json_type(d['time'][i])
-            
-        for obj_type, obj_name, attr, value in s._crawl_model():
-            d['model'][obj_type][obj_name][attr] = s._to_json_type(value) 
-            
-        return s.case
+        d = deepcopy(self.case.to_dict())  # Necessary to deepcopy?
+        return self._to_json_type(d)
 
     def _convert_to_pyshop_types(self):
         model = self.case['model']
         time = self.case['time']
         
         # Convert time data to types expected by pyshop
-        if isinstance(time['timeresolution'], (dict, DictImitator)):
-            #x = time['timeresolution']
-            time['timeresolution'] = pd.Series(dict(time['timeresolution']))
-            time['timeresolution'].index = pd.to_datetime(time['timeresolution'].index)
-            
-        time['starttime'] = pd.Timestamp(time['starttime'])
-        time['endtime'] = pd.Timestamp(time['endtime'])
+        tr = time['timeresolution']
+        if isinstance(tr, (dict, DictImitator)):
+            # Time resolution is a XY curve
+            if 'x' in tr:
+                time['timeresolution'] = pd.Series(tr['y'], index=tr['x'], name=tr['ref'])
+            # Time resolution is a TXY curve
+            else:
+                time['timeresolution'] = pd.Series(tr)
+                time['timeresolution'].index = pd.to_datetime(time['timeresolution'].index)
 
         # Drop identical consecutive values in timeresolution
         time['timeresolution'] = time['timeresolution'] \
             [time['timeresolution'] != time['timeresolution'].shift(1)]
+            
+        time['starttime'] = pd.Timestamp(time['starttime'])
+        time['endtime'] = pd.Timestamp(time['endtime'])
         
         # Convert model data to pandas Series      
         for obj_type, obj_name, attr, value in self._crawl_model():
@@ -728,15 +754,21 @@ class ShopCaseBaseClass(LoggingHandler):
                     new_value = pd.DataFrame(data=new_data, index=pd.to_datetime(new_index))
                     model[obj_type][obj_name][attr] = new_value.sort_index()
                 # XY curve
-                elif 'index' in value and 'value' in value:
-                    model[obj_type][obj_name][attr] = pd.Series(value['value'], index=value['index'],
-                                                                name=value['name'])
+                elif 'x' in value and 'y' in value:
+                    new_value = pd.Series(
+                        value['y'], 
+                        index=value['x'],
+                        name=value['ref']
+                        )
+                    model[obj_type][obj_name][attr] = new_value
                 # TXY
                 else:
                     new_value = pd.Series(value)
                     new_value.index = pd.to_datetime(new_value.index)
                     model[obj_type][obj_name][attr] = new_value.sort_index()
             # XY Curve array
-            elif isinstance(value, list) and len(value) > 0 and isinstance(value[0], dict):
-                model[obj_type][obj_name][attr] = [pd.Series(i['value'], index=i['index'], name=i['name'])
-                                                   for i in value]
+            elif isinstance(value, list) \
+                and all([isinstance(i, dict) for i in value]) \
+                and all([all([j in i for j in ['x', 'y', 'ref']]) for i in value]):
+                model[obj_type][obj_name][attr] = \
+                    [pd.Series(i['y'], index=i['x'], name=i['ref']) for i in value]

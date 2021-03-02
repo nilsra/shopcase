@@ -678,7 +678,7 @@ class ShopCaseBaseClass(LoggingHandler):
 
         if isinstance(x, pd.Series):  # Will remove duplicate index values (e.g. for endpoint_desc_nok_mm3)
             return {
-                'x': x.index.to_native_types().tolist(), 
+                'x': [self._to_json_type(i) for i in x.index], 
                 'y': x.values.tolist(), 
                 'ref': self._to_json_type(x.name)
                 }
@@ -728,7 +728,7 @@ class ShopCaseBaseClass(LoggingHandler):
                 time['timeresolution'] = pd.Series(tr['y'], index=tr['x'], name=tr['ref'])
             # Time resolution is a TXY curve
             else:
-                time['timeresolution'] = pd.Series(tr)
+                time['timeresolution'] = pd.Series(tr.to_dict() if isinstance(tr, DictImitator) else tr)
                 time['timeresolution'].index = pd.to_datetime(time['timeresolution'].index)
 
         # Drop identical consecutive values in timeresolution

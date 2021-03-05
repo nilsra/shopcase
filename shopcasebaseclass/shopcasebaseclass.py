@@ -89,14 +89,18 @@ class LoggingHandler:
 
 
 class ShopCaseBaseClass(LoggingHandler):
-    
-    def __init__(self, source, **metadata):
+    def __init__(
+        self,
+        source,
+        shop_init_func=lambda: pyshop.ShopSession(license_path=license_path),
+        **metadata
+    ):
 
         super().__init__()
         self.log.info(f'Init ShopCase : source_type={type(source)}')
 
         self.case = None
-        self.shop_init_func = lambda: pyshop.ShopSession()
+        self.shop_init_func = shop_init_func
 
         if isinstance(source, pyshop.ShopSession):
             self._from_shopsession(source)
@@ -674,7 +678,7 @@ class ShopCaseBaseClass(LoggingHandler):
         
         if isinstance(x, pd.Series) and isinstance(x.index, pd.DatetimeIndex):
             s = x[x != x.shift(1)]  #  Drop concecutive identical values 
-            return pd.Series(s.values, index=s.index.to_native_types()).to_dict()
+            return pd.Series(s.values, index=s.index.astype(str)).to_dict()
 
         if isinstance(x, pd.Series):  # Will remove duplicate index values (e.g. for endpoint_desc_nok_mm3)
             return {
@@ -685,7 +689,7 @@ class ShopCaseBaseClass(LoggingHandler):
 
         if isinstance(x, pd.DataFrame):
             df = x.loc[(x.shift() != x).all(1)]  # Drop consecutive identical rows
-            df.index = df.index.to_native_types()
+            df.index = df.index.astype(str)
 
             # Get the longest string in the serialized data in order to adjust the cell size for visual alignment
             max_string_len = df.applymap(lambda y: len(str(y))).values.max()
@@ -718,25 +722,27 @@ class ShopCaseBaseClass(LoggingHandler):
 
     def _convert_to_pyshop_types(self):
         model = self.case['model']
-        time = self.case['time']
         
-        # Convert time data to types expected by pyshop
-        tr = time['timeresolution']
-        if isinstance(tr, (dict, DictImitator)):
-            # Time resolution is a XY curve
-            if 'x' in tr:
-                time['timeresolution'] = pd.Series(tr['y'], index=tr['x'], name=tr['ref'])
-            # Time resolution is a TXY curve
-            else:
-                time['timeresolution'] = pd.Series(tr.to_dict() if isinstance(tr, DictImitator) else tr)
-                time['timeresolution'].index = pd.to_datetime(time['timeresolution'].index)
-
-        # Drop identical consecutive values in timeresolution
-        time['timeresolution'] = time['timeresolution'] \
-            [time['timeresolution'] != time['timeresolution'].shift(1)]
+        if "time" in self.case:
+            time = self.case['time']
             
-        time['starttime'] = pd.Timestamp(time['starttime'])
-        time['endtime'] = pd.Timestamp(time['endtime'])
+            # Convert time data to types expected by pyshop
+            tr = time['timeresolution']
+            if isinstance(tr, (dict, DictImitator)):
+                # Time resolution is a XY curve
+                if 'x' in tr:
+                    time['timeresolution'] = pd.Series(tr['y'], index=tr['x'], name=tr['ref'])
+                # Time resolution is a TXY curve
+                else:
+                    time['timeresolution'] = pd.Series(tr.to_dict() if isinstance(tr, DictImitator) else tr)
+                    time['timeresolution'].index = pd.to_datetime(time['timeresolution'].index)
+
+            # Drop identical consecutive values in timeresolution
+            time['timeresolution'] = time['timeresolution'] \
+                [time['timeresolution'] != time['timeresolution'].shift(1)]
+                
+            time['starttime'] = pd.Timestamp(time['starttime'])
+            time['endtime'] = pd.Timestamp(time['endtime'])
         
         # Convert model data to pandas Series      
         for obj_type, obj_name, attr, value in self._crawl_model():

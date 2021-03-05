@@ -100,7 +100,7 @@ class DictImitator:
 
 class ShopCaseBaseClass:
     
-    def __init__(self, source, shop_init_func=pyshop.ShopSession()):
+    def __init__(self, source, shop_init_func=pyshop.ShopSession):
 
         log.info(f'Init ShopCase : source_type={type(source)}')
 

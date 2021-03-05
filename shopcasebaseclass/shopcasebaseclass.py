@@ -1,10 +1,9 @@
 
 from __future__ import annotations
 
-from typing import ByteString, Union, Dict
+from typing import ByteString, Union, Dict, Iterable
 
 import os
-import sys
 import json
 import zipfile
 import tempfile
@@ -24,8 +23,29 @@ from graphviz import Digraph
 import pyshop  # type: ignore
 
 
+log = logging.getLogger(__name__)
+
+
 class DictImitator:
-    """ To enable .<tab> completion of ShopCase.case in Jupyter. """
+    """ To enable .<tab> completion of ShopCase.case in Jupyter. 
+    
+    Methods "__getitem__", "keys" and "__contains__" are required to make the class
+    play nice with pandas. E.g. to make the pandas.Series initiation from DictImitator 
+    behave in the same way as for native dicts.
+
+    Known limitations
+    -----------------
+    pandas.DataFrame(DictImitator) != pandas.DataFrame(DictImitator.to_dict())
+        Use pandas.DataFrame(DictImitator).to_dict()
+        The reason is that pandas checks for isinstance(..., dict) when initializing the
+        arrays in the DataFrame. (suggest that pandas checks is_dict_like instead from 
+        \\pandas\\core\\dtypes\\inference.py instead?).
+        A solution could be to inherit from dict, but this can create unpredictable 
+        behaviour and is not recommended 
+        https://treyhunner.com/2019/04/why-you-shouldnt-inherit-from-list-and-dict-in-python/
+        Adding tests of all overridden methods may allow us to inherit from dict in a 
+        safe way.
+    """
     
     def __init__(self, **kwargs):
         self.__dict__.update(kwargs)
@@ -35,6 +55,9 @@ class DictImitator:
                 
     def __repr__(self):
         return self.__dict__.__repr__()
+    
+    def __contains__(self, key):
+        return key in self.__dict__      
     
     def __getitem__(self, key):
         return self.__getattribute__(key)
@@ -75,32 +98,14 @@ class DictImitator:
         return d
 
 
-class LoggingHandler:
-    def __init__(self):
-        self.log = logging.getLogger('ShopCase')
-        self.log.setLevel(logging.DEBUG)
-        if len(self.log.handlers) == 0:
-            handler = logging.StreamHandler(stream=sys.stdout)
-            handler.setFormatter(
-                logging.Formatter(
-                    f'%(asctime)s | %(levelname)s | %(module)s.%(funcName)s | %(message)s')
-            )
-            self.log.addHandler(handler)
+class ShopCaseBaseClass:
+    
+    def __init__(self, source, shop_init_func=pyshop.ShopSession):
 
+        log.info(f'Init ShopCase : source_type={type(source)}')
 
-class ShopCaseBaseClass(LoggingHandler):
-    def __init__(
-        self,
-        source,
-        shop_init_func=lambda: pyshop.ShopSession(license_path=license_path),
-        **metadata
-    ):
-
-        super().__init__()
-        self.log.info(f'Init ShopCase : source_type={type(source)}')
-
-        self.case = None
         self.shop_init_func = shop_init_func
+        self.case = None
 
         if isinstance(source, pyshop.ShopSession):
             self._from_shopsession(source)
@@ -110,6 +115,8 @@ class ShopCaseBaseClass(LoggingHandler):
             self._from_bytestring(source)
         elif isinstance(source, str) and source[0] == '{':
             self._from_json(source)
+        #elif isinstance(source, 'yaml_string'):
+        #    raise NotImplementedError
         elif isinstance(source, (str, Path)) and (Path(source) / 'model.yaml').exists():
             self._from_dir(source)
         elif isinstance(source, (str, Path)) and '.shop.zip' in Path(source).name:
@@ -117,11 +124,6 @@ class ShopCaseBaseClass(LoggingHandler):
 
         if isinstance(self.case, dict):
             self.case = DictImitator(**self.case)
-
-        if not 'metadata' in self.case:
-            self.case['metadata'] = DictImitator()
-        self.case['metadata']['id'] = str(uuid.uuid1())
-        self.case['metadata'].update(metadata)
         
     @property
     def model(self):
@@ -163,6 +165,7 @@ class ShopCaseBaseClass(LoggingHandler):
         self.shopdir = shopdir
 
         # Run SHOP
+        iteration = 0
         shop = self.to_shopsession()
         for c in self.case['commands']:
             if not c.strip() or c.strip()[0] == '#':
@@ -170,12 +173,15 @@ class ShopCaseBaseClass(LoggingHandler):
             time.sleep(0.1)  # To prevent delayed print of command in Jupyter
             if 'start sim' in c:
                 for i in range(int(c.split(' ')[-1])):
-                    self.log.info(f'Calling command "start sim 1"')
+                    log.info(f'Calling command "start sim 1"')
                     shop.execute_full_command('start sim 1') 
                     if save_results_per_iteration:
-                        results_per_iteration.append(ShopCaseBaseClass(shop))
+                        iteration += 1
+                        results_per_iteration.append(
+                            ShopCaseBaseClass(shop)
+                            )
             else:
-                self.log.info(f'Calling command "{c}"')
+                log.info(f'Calling command "{c}"')
                 shop.execute_full_command(c) 
 
         # Reverse ownership scaling
@@ -228,13 +234,14 @@ class ShopCaseBaseClass(LoggingHandler):
         commands_to_call_before_object_creation = ['set newgate /off']
         for c in commands_to_call_before_object_creation:
             if c in self.case['commands']:
-                self.log.info(f'Calling command "{c}"')
+                log.info(f'Calling command "{c}"')
                 shop.execute_full_command(c)
 
         model = self.case['model']
 
         # Set time resolution
-        shop.set_time_resolution(**self.case['time'])
+        if 'time' in self.case:
+            shop.set_time_resolution(**self.case['time'])
         
         ## Create the objects
         scenarios = []
@@ -260,28 +267,19 @@ class ShopCaseBaseClass(LoggingHandler):
             if shop.shop_api.GetAttributeInfo(obj_type, attr, 'isInput') == 'True':
                 shop.model[obj_type][obj_name][attr].set(value)
             
-        # Connect objects
-        conn = self.case['connections']
-        for to_type in conn:
-            for to_name in conn[to_type]:
-                for connection_map in conn[to_type][to_name]:
-                    try:
-                        shop.shop_api.AddRelation(connection_map['upstream_obj_type'],
-                                                  connection_map['upstream_obj_name'],
-                                                  connection_map['connection_type'], to_type, to_name)
-
-                    except ValueError:
-                        self.log.error(f'to_shopsession : could not connect '
-                            f'from_type={connection_map["upstream_obj_type"]}, '
-                            f'from_name={connection_map["upstream_obj_name"]}, '
-                            f'conn_type={connection_map["connection_type"]}, '
-                            f'to_type={to_type}, '
-                            f'to_name={to_name}')
+        # Insert connections in ShopSession
+        sorted_connections = sorted(
+            self.case['connections'], key=lambda c: c.get('order', 0)
+            )
+        for c in sorted_connections:
+            shop.shop_api.AddRelation(
+                c['from_type'], c['from'], c['connection_type'], c['to_type'], c['to']
+                )
 
         # Load any ascii data
         if 'ascii' in self.case:
             for i in self.case['ascii']:
-                self.log.info(f'Loading ASCII string {i["name"]}')
+                log.info(f'Loading ASCII string {i["name"]}')
                 shop.shop_api.ReadShopAsciiString(i['content'])
 
         return shop
@@ -363,10 +361,7 @@ class ShopCaseBaseClass(LoggingHandler):
             
             raise ValueError(f'Type not specified in is_equal : {i}={type(i)}')
 
-        skip = ['attr_info', 'objtype_info']
-        case1 = dict([(i, self.case[i]) for i in self.case if not i in skip])
-        case2 = dict([(i, other.case[i]) for i in other.case if not i in skip])
-        return _compare(case1, case2)
+        return _compare(self.case, other.case)
 
     def drop_mc_data(self):
         """ Drop the large data sets to make it feasible to serialize data to disk. """
@@ -407,7 +402,7 @@ class ShopCaseBaseClass(LoggingHandler):
         return df
 
     def expand_timeseries(self, freq: str = '15T'):
-        """ Expand all time to include all time steps between starttime and 
+        """ Expand all time series to include all time steps between starttime and 
         endtime with the given frequency.
 
         Note that this may distort the aggregate sum of e.g. startup costs.        
@@ -415,22 +410,36 @@ class ShopCaseBaseClass(LoggingHandler):
         for obj_type, obj_name, attr, value in self._crawl_model():
             if isinstance(value, pd.Series) and isinstance(value.index, pd.DatetimeIndex):
                 value.loc[self.case['time']['endtime']] = value.iloc[-1]
-                self.case['model'][obj_type][obj_name][attr] = value.resample('15T').ffill()
+                self.case['model'][obj_type][obj_name][attr] = value.resample(freq).ffill()
 
-    def show_topology(self, jupyter_scalable=False, width='100%') -> Digraph:
+    def show_topology(self, return_img=False, img_width='100%') -> Digraph:
         """ 
+        Show the model topology using graphviz. Differs from the build_connection_tree
+        method in pyshop by including *all* objects.
+
         parameters
         ----------
-        jupyter_scalable : bool
-            Return an string HTML div with a PNG image. Necessary for scaling 
-            the topology to fit the width of a jupyter notebook.
+        return_img : bool
+            Return an HTML <img> tag with a PNG image. Necessary for scaling the topology to
+            fit the width of a jupyter notebook and to preserve the image when the 
+            notebook is saved. Only works in an IPython environment.
+        img_width : str
+            The with of the image set in the <img> tag, e.g. '100%'.
         """
 
-        dot = Digraph(comment='SHOP topology')
+        if return_img:
+            from IPython.display import HTML
+            import base64
+            top = self.show_topology()
+            top.format = 'png'
+            return HTML(f'<img width={img_width} src="data:image/png;base64,{base64.b64encode(top.pipe()).decode()}">')
 
-        Node = namedtuple('Node', ['type', 'label', 'name'])
-        Edge = namedtuple('Edge', ['relation', 'start', 'end'])
+        def get_edge_style(e: Edge):
+            if 'gate' in [e.start.type, e.end.type] and e.relation == 'connection_standard':
+                return 'dashed'
+            return 'solid'  
 
+        # Styles
         default_node_attrs = {'shape': 'ellipse', 'fillcolor': '#ffffff', 'style': ''}
         node_attrs = {
             'plant': {'shape': 'box', 'fillcolor': '#FF9999', 'style': 'filled'},
@@ -439,29 +448,19 @@ class ShopCaseBaseClass(LoggingHandler):
             'junction_gate': {'shape': 'point', 'fillcolor': '#ffffff', 'style': ''}
         }
 
-        def get_edge_style(e: Edge):
-            if 'gate' in [e.start.type, e.end.type] and e.relation == 'connection_standard':
-                return 'dashed'
-            return 'solid'  
-
+        dot = Digraph(comment='SHOP topology')
+        Node = namedtuple('Node', ['type', 'label', 'name'])
+        Edge = namedtuple('Edge', ['relation', 'start', 'end'])
         nodes = set()
         edges = set()
 
-        for obj_type in self.case['connections']:
-            for obj_name, conn in self.case['connections'][obj_type].items():
-                node1 = Node(type=obj_type, label=obj_name, name=f'{obj_type}_{obj_name}')
-                nodes.add(node1)
-
-                for c in conn:
-                    obj_type2 = c['upstream_obj_type']
-                    obj_name2 = c['upstream_obj_name']
-                    conn_type = c['connection_type']
-                    
-                    node2 = Node(type=obj_type2, label=obj_name2, name=f'{obj_type2}_{obj_name2}')
-                    edge = Edge(relation=conn_type, start=node2, end=node1)         
-                    
-                    nodes.add(node2)
-                    edges.add(edge)
+        for c in self.case['connections']:
+            node1 = Node(type=c['from_type'], label=c['from'], name=f"{c['from_type']}_{c['from']}")
+            node2 = Node(type=c['to_type'], label=c['to'], name=f"{c['to_type']}_{c['to']}")
+            edge = Edge(relation=c['connection_type'], start=node1, end=node2)         
+            nodes.add(node1)
+            nodes.add(node2)
+            edges.add(edge)
 
         for n in nodes:
             dot.node(n.name, label=n.label, **node_attrs.get(n.type, default_node_attrs))
@@ -469,17 +468,12 @@ class ShopCaseBaseClass(LoggingHandler):
         for e in edges:
             dot.edge(e.start.name, e.end.name, style=get_edge_style(e))
 
-        if jupyter_scalable:
-            from IPython.display import HTML
-            import base64
-            top = self.show_topology()
-            top.format = 'png'
-            return HTML(f'<img width="width" src="data:image/png;base64,{base64.b64encode(top.pipe()).decode()}" >')
-
         return dot
 
     def to_file(self, filename: Union[str, Path] = 'case.shop.zip'):
-        self.drop_mc_data()  # Drop bestprofit and other marginal cost data as it inflates the model file too much
+        # Drop bestprofit and other marginal cost data as it inflates the model 
+        # file to an unmanagable size.
+        self.drop_mc_data()  
         with open(filename, 'wb') as f:
             f.write(self._to_bytestring())
         return Path(filename).absolute()
@@ -498,11 +492,14 @@ class ShopCaseBaseClass(LoggingHandler):
             indent=indent
             )
 
-    def to_yaml_string(self) -> str:
+    def to_yaml_string(
+        self, subset: Iterable[str] = None, drop_custom_fields: bool = True
+        ) -> str:
         d = self._get_dict_with_json_types()
-        for i in ['attr_info', 'objtype_info']:
-            if i in d:
-                d.pop(i)
+        if subset is not None:
+            [d.pop(i) for i in list(d) if not i in subset]
+        elif drop_custom_fields:
+            [d.pop(i) for i in list(d) if i[0] == '_']
         return yaml.safe_dump(
             d,
             allow_unicode=True, 
@@ -522,6 +519,9 @@ class ShopCaseBaseClass(LoggingHandler):
     def _from_json(self, s: str):
         self.case = json.loads(s)
         self._convert_to_pyshop_types()
+
+    def _from_yaml_string(self, s: str):
+        raise NotImplementedError
 
     def _from_file(self, filename: Union[str, Path]):
         with open(filename, 'rb') as f:
@@ -563,7 +563,7 @@ class ShopCaseBaseClass(LoggingHandler):
             try: 
                 value = v['func'](shop)
             except Exception as e:
-                self.log.error(f"Couldn't import {k} from ShopSession due to '{e}'")
+                log.error(f"Couldn't import {k} from ShopSession due to '{e}'")
                 value = v['default']
             d[k] = value
 
@@ -601,7 +601,7 @@ class ShopCaseBaseClass(LoggingHandler):
             try: 
                 obj = shop.model[obj_type][obj_name]
             except AttributeError:
-                self.log.error(f'_get_model : Could not get shop.model[{obj_type}][{obj_name}]')
+                log.error(f'_get_model : Could not get shop.model[{obj_type}][{obj_name}]')
                 continue
 
             attrs = obj.datatype_dict
@@ -619,46 +619,29 @@ class ShopCaseBaseClass(LoggingHandler):
         return model   
             
     def _get_connections(self, shop: pyshop.ShopSession) -> Dict:
-        obj_list = list(
-            zip(shop.shop_api.GetObjectTypesInSystem(), 
-                shop.shop_api.GetObjectNamesInSystem())
-        )
-        obj_dicts = [{'obj_type': x[0], 'obj_name': x[1]} for x in obj_list]
-        
-        connections = {}
-    
-        for to_obj_type, to_obj_name in obj_list:
-            if shop.shop_api.GetObjectInfo(to_obj_type, 'isInput') == 'False':
-                continue
+        connections = []
+        obj_types = shop.shop_api.GetObjectTypesInSystem()
+        obj_names = shop.shop_api.GetObjectNamesInSystem()
 
-            input_relations = []
-            for conn_type in shop.shop_api.GetValidRelationTypes(to_obj_type):
-                # Use input relations in order to ensure connection order is preserved in cases where this matter
-                # E.g. Junctions where tunnel_loss_1 might differ from tunnel_loss_2 and so on
-                relations = shop.shop_api.GetInputRelations(to_obj_type, to_obj_name, conn_type)
+        for to_type, to_name in zip(obj_types, obj_names):
+            valid_relation_types = shop.shop_api.GetValidRelationTypes(to_type)
+            
+            for conn_type in valid_relation_types:
+                relations = shop.shop_api.GetInputRelations(to_type, to_name, conn_type)
                 
-                if not relations:
-                    continue
-                
-                for r in relations:
-                    new_relation = dict(obj_dicts[r])
-                    new_relation["conn_type"] = conn_type
-                    input_relations.append(new_relation)
-                    
-            if input_relations:
-                # We also need to list the connections in downstream-upstream convention to preserve connection order
-                for relation in input_relations:
-                    if to_obj_type not in connections:
-                        connections[to_obj_type] = {}
-                    if to_obj_name in connections[to_obj_type]:
-                        connections[to_obj_type][to_obj_name].append({'upstream_obj_type': relation['obj_type'],
-                                                                      'upstream_obj_name': relation['obj_name'],
-                                                                      'connection_type': relation['conn_type']})
-                    else:
-                        connections[to_obj_type][to_obj_name] = [{'upstream_obj_type': relation['obj_type'],
-                                                                  'upstream_obj_name': relation['obj_name'],
-                                                                  'connection_type': relation['conn_type']}]
-                    
+                for order, r in enumerate(relations): # Enumerate to get "order"
+                    from_type, from_name = obj_types[r], obj_names[r]
+                    connection = {
+                        'from': from_name, 
+                        'to': to_name,
+                        'from_type': from_type,
+                        'to_type': to_type,
+                        'connection_type': conn_type
+                    }
+                    if len(relations) > 1 and 'junction' in to_type:
+                        connection['order'] = order
+                    connections.append(connection)
+
         return connections
 
     def _to_json_type(self, x):
@@ -721,9 +704,8 @@ class ShopCaseBaseClass(LoggingHandler):
         return self._to_json_type(d)
 
     def _convert_to_pyshop_types(self):
-        model = self.case['model']
-        
-        if "time" in self.case:
+
+        if 'time' in self.case:
             time = self.case['time']
             
             # Convert time data to types expected by pyshop
@@ -734,7 +716,7 @@ class ShopCaseBaseClass(LoggingHandler):
                     time['timeresolution'] = pd.Series(tr['y'], index=tr['x'], name=tr['ref'])
                 # Time resolution is a TXY curve
                 else:
-                    time['timeresolution'] = pd.Series(tr.to_dict() if isinstance(tr, DictImitator) else tr)
+                    time['timeresolution'] = pd.Series(tr)
                     time['timeresolution'].index = pd.to_datetime(time['timeresolution'].index)
 
             # Drop identical consecutive values in timeresolution
@@ -744,7 +726,9 @@ class ShopCaseBaseClass(LoggingHandler):
             time['starttime'] = pd.Timestamp(time['starttime'])
             time['endtime'] = pd.Timestamp(time['endtime'])
         
+
         # Convert model data to pandas Series      
+        model = self.case['model']
         for obj_type, obj_name, attr, value in self._crawl_model():
             if isinstance(value, (dict, DictImitator)):
                 # Stochastic TXY

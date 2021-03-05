@@ -3,7 +3,7 @@ from pathlib import Path
 
 from shopcasebaseclass import ShopCaseBaseClass
 
-DEFAULT_DIFF_OF_COPY = "{'metadata': {'id': True}}"
+DEFAULT_DIFF_OF_COPY = "{}"
 
 
 
@@ -27,7 +27,7 @@ def test_copy_and_diff():
     s1 = _load_testcase()
     s2 = s1.copy()
     s2.case['model']['reservoir']['Reservoir1']['inflow'] += 1
-    assert str(s1.diff(s2)) == "{'metadata': {'id': True}, 'model': {'reservoir': {'Reservoir1': {'inflow': True}}}}"
+    assert str(s1.diff(s2)) == "{'model': {'reservoir': {'Reservoir1': {'inflow': True}}}}"
 
 
 def test_run():

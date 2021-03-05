@@ -100,7 +100,7 @@ class DictImitator:
 
 class ShopCaseBaseClass:
     
-    def __init__(self, source, shop_init_func=pyshop.ShopSession):
+    def __init__(self, source, shop_init_func=pyshop.ShopSession()):
 
         log.info(f'Init ShopCase : source_type={type(source)}')
 
@@ -178,7 +178,7 @@ class ShopCaseBaseClass:
                     if save_results_per_iteration:
                         iteration += 1
                         results_per_iteration.append(
-                            ShopCaseBaseClass(shop, name=f'{self.name} ({iteration})')
+                            ShopCaseBaseClass(shop)
                             )
             else:
                 log.info(f'Calling command "{c}"')

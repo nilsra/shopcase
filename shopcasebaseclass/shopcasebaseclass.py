@@ -661,7 +661,7 @@ class ShopCaseBaseClass:
         
         if isinstance(x, pd.Series) and isinstance(x.index, pd.DatetimeIndex):
             s = x[x != x.shift(1)]  #  Drop concecutive identical values 
-            return pd.Series(s.values, index=s.index.to_native_types()).to_dict()
+            return pd.Series(s.values, index=s.index.astype(str)).to_dict()
 
         if isinstance(x, pd.Series):  # Will remove duplicate index values (e.g. for endpoint_desc_nok_mm3)
             return {
@@ -672,7 +672,7 @@ class ShopCaseBaseClass:
 
         if isinstance(x, pd.DataFrame):
             df = x.loc[(x.shift() != x).all(1)]  # Drop consecutive identical rows
-            df.index = df.index.to_native_types()
+            df.index = df.index.astype(str)
 
             # Get the longest string in the serialized data in order to adjust the cell size for visual alignment
             max_string_len = df.applymap(lambda y: len(str(y))).values.max()

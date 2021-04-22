@@ -623,6 +623,10 @@ class ShopCaseBaseClass:
         obj_types = shop.shop_api.GetObjectTypesInSystem()
         obj_names = shop.shop_api.GetObjectNamesInSystem()
 
+        # A number of connections are bidirectional and will be returned for both objects involved. Keep a set of
+        # added connections to avoid adding duplicate connections
+        added_connections = set([])
+
         for to_type, to_name in zip(obj_types, obj_names):
             valid_relation_types = shop.shop_api.GetValidRelationTypes(to_type)
             
@@ -631,6 +635,12 @@ class ShopCaseBaseClass:
                 
                 for order, r in enumerate(relations): # Enumerate to get "order"
                     from_type, from_name = obj_types[r], obj_names[r]
+
+                    # Skip the connection if it is bidirectional and has already been added by the other object involved
+                    reverse_connection_tuple = (to_type, to_name, from_type, from_name)
+                    if reverse_connection_tuple in added_connections:
+                        continue
+
                     connection = {
                         'from': from_name, 
                         'to': to_name,
@@ -641,6 +651,10 @@ class ShopCaseBaseClass:
                     if len(relations) > 1 and 'junction' in to_type:
                         connection['order'] = order
                     connections.append(connection)
+
+                    # Update set of seen connections
+                    connection_tuple = (from_type, from_name, to_type, to_name)
+                    added_connections.add(connection_tuple)
 
         return connections
 
